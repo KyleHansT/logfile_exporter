@@ -31,6 +31,9 @@ var (
 
 	TrimReg    *regexp.Regexp
 	repalceReg = " "
+
+	//tail开源库不能自动删除重建文件的watch，需要另外调用cleanup
+	FilePathMap map[string]*File
 )
 
 var (
@@ -113,9 +116,9 @@ func walkLogDir(dir string) (files []string, err error) {
 func WatchFiles(dirs []string) {
 	CollectorMap = map[string]*LogStat{}
 	AllMessageMap = map[string]*LogStat{}
-
 	WebCollectorMap = map[string]*LogStat{}
 	WebAllMessageMap = map[string]*LogStat{}
+	FilePathMap = map[string]*File{}
 
 	// get list of all files in watch dir
 	files := make([]string, 0)
@@ -156,13 +159,16 @@ func WatchFiles(dirs []string) {
 
 func assignFiles(allFiles []string) (outFiles []*File, err error) {
 	files := make([]*File, 0)
-	log.Infoln("files:", allFiles)
 	liveReg, _ := regexp.Compile(`[Ll]ive[^/]*log$`)
 	webReg, _ := regexp.Compile(`[Ww]eb[^/]*log$`)
 	for _, f := range allFiles {
 		if strings.Contains(f[len(*watchPath):], "/") {
 			continue
 		}
+		if fileTail, ok := FilePathMap[f]; ok {
+			fileTail.Tail.Cleanup()
+		}
+
 		if liveReg.MatchString(f) {
 			file, err := NewFile(f, "live")
 			if err != nil {
@@ -170,6 +176,7 @@ func assignFiles(allFiles []string) (outFiles []*File, err error) {
 			}
 			log.Infof("match file: %s  filetype: %s", f, file.FileType)
 			files = append(files, file)
+			FilePathMap[f] = file
 		}
 		if webReg.MatchString(f) {
 			file, err := NewFile(f, "web")
@@ -178,11 +185,13 @@ func assignFiles(allFiles []string) (outFiles []*File, err error) {
 			}
 			log.Infof("match file: %s  filetype: %s", f, file.FileType)
 			files = append(files, file)
+			FilePathMap[f] = file
 		}
 	}
 	return files, nil
 }
 
+//处理该程序先于日志文件生成而运行的情况
 func continueWatch(dir *string, doneCh chan string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -250,13 +259,14 @@ type File struct {
 }
 
 func (self *File) tail() {
-	log.Infoln("start tailing %v", self.Tail.Filename)
+	log.Infoln("start tailing: ", self.Tail.Filename)
 	defer func() { self.doneCh <- self.Tail.Filename }()
 
 	for line := range self.Tail.Lines {
 		if line.Text == "" {
 			continue
 		}
+		//log.Infoln("line.Text", line.Text)
 
 		switch self.FileType {
 		case "live":
